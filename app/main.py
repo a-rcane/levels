@@ -1,24 +1,13 @@
 from flask import Flask, request, jsonify
 import pandas as pd
-from sqlalchemy import create_engine, QueuePool
 from database import get_db_connection, create_table
 import numpy as np
 import json
-from flask_caching import Cache
 
 app = Flask(__name__)
 
-
-cache = Cache(config={'CACHE_TYPE': 'simple'})
-cache.init_app(app)
-
-
 with app.app_context():
     create_table()
-
-
-DATABASE_URL = 'sqlite:///data/sensor_data.db'
-engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_size=10, max_overflow=20)
 
 
 @app.route('/ingest', methods=['POST'])
@@ -28,11 +17,11 @@ def ingest():
         return jsonify({"error": "URL parameter is required"}), 400
 
     try:
-        # Fetch and load CSV
         df = pd.read_csv(url)
-        with engine.connect() as conn:
-            df.to_sql('sensor_data', conn, if_exists='append', index=False, chunksize=10000)
-
+        conn = get_db_connection()
+        df.to_sql('sensors', conn, if_exists='append', index=False, chunksize=10000)
+        conn.commit()
+        conn.close()
         return jsonify({"message": "Data ingested successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -54,7 +43,6 @@ def apply_filters(query, filters):
             conditions.append(f'{column_name} = ?')
             params.append(filter_values)
 
-    # Apply filters to query
     for key in ['id', 'type', 'subtype', 'location']:
         if key in filters:
             append_filter(key, filters[key])
@@ -66,33 +54,33 @@ def apply_filters(query, filters):
 
 
 @app.route('/median', methods=['GET'])
-@cache.cached(timeout=60, key_prefix='median_data')
 def get_median():
     filter_param = request.args.get('filter')
     filters = json.loads(filter_param) if filter_param else {}
 
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
     query = "SELECT reading FROM sensor_data"
     query, params = apply_filters(query, filters)
 
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(query, params)
-            readings = [row['reading'] for row in result.fetchall()]
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
 
-        if not readings:
-            return jsonify({"message": "No sensor data found matching the filter."}), 200
+    readings = [row['reading'] for row in rows]
 
-        median_value = np.median(readings)
+    if not readings:
+        return jsonify({"message": "No sensor data found matching the filter."}), 200
 
-        response = {
-            "count": len(readings),
-            "median": median_value
-        }
+    median_value = np.median(readings)
 
-        return jsonify(response)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    response = {
+        "count": len(readings),
+        "median": median_value
+    }
+
+    return jsonify(response)
 
 
 if __name__ == "__main__":
-    app.run(debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5000)
