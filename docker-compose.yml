@@ -1,0 +1,25 @@
+version: '3'
+services:
+  flask:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./app:/app/app
+      - data:/app/data
+    working_dir: /app/app
+    command: python main.py
+
+  locust:
+    image: locustio/locust:2.31.6
+    ports:
+      - "8089:8089"
+    volumes:
+      - .:/mnt/locust
+    working_dir: /mnt/locust
+    command: -f locustfile.py --host=http://flask:5000
+    depends_on:
+      - flask
+
+volumes:
+  data:
